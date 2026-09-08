@@ -1,5 +1,8 @@
 #!/bin/bash
-# start_server.sh - Run the PI-CHAT GATEWAY server in the background.
+# start_server.sh - Run the Vivid Mistress server in the background on macOS.
+#
+# This script starts the server detached so it keeps running even after the
+# terminal is closed.
 #
 # Usage:
 #   ./start_server.sh            Start the server in the background
@@ -8,7 +11,11 @@
 #   ./start_server.sh restart    Stop, then start again
 #
 # Extra arguments are passed to the server, e.g.:
-#   ./start_server.sh -addr :9090 -data /home/pi/chatdata
+#   ./start_server.sh -addr :9090 -data ~/chatdata
+#
+# The server keeps running after you close the terminal. Its output is
+# written to server.log and its process ID to server.pid (both created
+# in this script's folder).
 
 set -u
 

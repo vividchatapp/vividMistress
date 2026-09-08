@@ -1,5 +1,8 @@
 #!/bin/bash
-# start_server.sh - Run the PI-CHAT GATEWAY server in the background.
+# start_server.sh - Run the Vivid Mistress server in the background on Linux/Unix.
+#
+# This script starts the server detached so it keeps running even after the
+# terminal is closed or the SSH session ends.
 #
 # Usage:
 #   ./start_server.sh            Start the server in the background

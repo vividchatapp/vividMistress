@@ -1228,6 +1228,13 @@ html, body {
     gap: 8px;
     padding: 12px;
     padding-bottom: calc(12px + var(--safe-bottom));
+    /* Override the tablet fixed positioning so the input stays in the
+       flex flow and remains visible above the on-screen keyboard. */
+    position: static;
+    left: auto;
+    right: auto;
+    bottom: auto;
+    z-index: auto;
   }
 
   .chat-messages {

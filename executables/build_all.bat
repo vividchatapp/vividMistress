@@ -166,7 +166,7 @@ if %ERRORLEVEL% equ 0 (echo   OK) else (echo   FAILED)
 echo.
 
 :: ============================================================
-:: Linux Targets
+:: Windows Targets (cont.)
 :: ============================================================
 echo [12/12] Building for Windows x86...
 set GOOS=windows

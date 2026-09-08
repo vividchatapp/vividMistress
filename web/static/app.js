@@ -230,7 +230,9 @@
   // Only external names are shown (e.g. "Sonia"), never the internal ids.
   function updateStatus() {
     if (el.roleChip) {
-      el.roleChip.textContent = 'Role: ' + (state.role || '—');
+      const roleName = state.role || '—';
+      el.roleChip.textContent = 'Role: ' + roleName;
+      el.roleChip.title = 'Current role: ' + roleName + '. Type \'role\' to list roles.';
     }
     const shownVoice = voiceFriendly || voiceName;
     if (el.voiceChip) {
@@ -373,6 +375,7 @@
       btn.type = 'button';
       btn.className = 'suggestion-btn';
       btn.textContent = text;
+      btn.title = text;
       btn.addEventListener('click', () => handleSuggestionClick(text));
       container.appendChild(btn);
     }
@@ -669,10 +672,16 @@
       }
     });
 
-    // While the user types, any suggestion buttons (and the auto-continue
-    // timer) disappear so they never fight the user.
+    // While the user types the auto-continue timer is cancelled — typing means
+    // they are about to send, and the reply from that send will re-arm the
+    // timer naturally. The suggestion buttons also disappear so they never
+    // fight the user.
     el.inputMessage.addEventListener('input', () => {
       autosizeInput();
+      if (responseTimer) {
+        log('user is typing — cancelling the auto-continue timer');
+        clearResponseTimer();
+      }
       if (suggestionButtons.length > 0) {
         log('user is typing — making the buttons disappear');
         clearSuggestions();
@@ -692,9 +701,30 @@
 
   autosizeInput();
 
+  // Keep the composer above mobile keyboards that overlay the page instead
+  // of resizing the layout viewport. The CSS already has a --keyboard-offset
+  // custom property on #input-area; this keeps it in sync on iOS where
+  // 100dvh does not shrink when the keyboard opens.
+  function initKeyboardAdjustment() {
+    if (!window.visualViewport) return;
+    const fullViewportHeight = Math.max(window.innerHeight, window.visualViewport.height);
+    const updateKeyboardOffset = () => {
+      const isMobile = window.matchMedia('(max-width: 768px)').matches;
+      const viewport = window.visualViewport;
+      const keyboardHeight = fullViewportHeight - viewport.height - viewport.offsetTop;
+      const offset = isMobile && keyboardHeight > 100 ? keyboardHeight : 0;
+      document.documentElement.style.setProperty('--keyboard-offset', Math.max(0, offset) + 'px');
+    };
+    window.visualViewport.addEventListener('resize', updateKeyboardOffset);
+    window.visualViewport.addEventListener('scroll', updateKeyboardOffset);
+    window.addEventListener('resize', updateKeyboardOffset);
+    updateKeyboardOffset();
+  }
+
   // ---- Init ----------------------------------------------------------------
   (async function init() {
     loadSessionPrefs();
+    initKeyboardAdjustment();
     log('Vivid Mistress loading…');
     try {
       const data = await api('/api/session');
