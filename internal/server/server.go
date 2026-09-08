@@ -171,6 +171,10 @@ func (s *Server) loadRoles() ([]Role, error) {
 		if !strings.EqualFold(filepath.Ext(name), ".txt") {
 			continue
 		}
+		// models.txt lists available LLM models — not a role prompt.
+		if strings.EqualFold(name, "models.txt") {
+			continue
+		}
 		path := filepath.Join(dir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -186,6 +190,36 @@ func (s *Server) loadRoles() ([]Role, error) {
 		return strings.ToLower(roles[i].Name) < strings.ToLower(roles[j].Name)
 	})
 	return roles, nil
+}
+
+// loadModels reads the list of available LLM model names from models.txt
+// in the configured roles directory. Each non-empty, non-comment line is a
+// model name (e.g. "gemma4:31b"). Returns a single-entry default list when
+// the file is missing or empty so the app still works out of the box.
+func (s *Server) loadModels() ([]string, error) {
+	dir := strings.TrimSpace(s.cfg.RolesDir)
+	if dir == "" {
+		dir = DefaultRolesDir
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "models.txt"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []string{DefaultModel}, nil
+		}
+		return nil, err
+	}
+	var models []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		models = append(models, line)
+	}
+	if len(models) == 0 {
+		return []string{DefaultModel}, nil
+	}
+	return models, nil
 }
 
 // roleList finds the loaded role by name (case-insensitive).
@@ -245,6 +279,23 @@ func (s *Server) formatRoleList() string {
 	for i, r := range roles {
 		fmt.Fprintf(&b, "%d) %s", i+1, r.Name)
 		if i < len(roles)-1 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+// formatModelList renders the numbered model listing used by the "model"
+// command, e.g. "1) gemma4:31b", "2) gpt-oss:120b", ...
+func (s *Server) formatModelList() string {
+	models, err := s.loadModels()
+	if err != nil {
+		return "No models available: " + err.Error()
+	}
+	var b strings.Builder
+	for i, m := range models {
+		fmt.Fprintf(&b, "%d) %s", i+1, m)
+		if i < len(models)-1 {
 			b.WriteString("\n")
 		}
 	}
@@ -341,9 +392,11 @@ func (s *Server) ensureConversationDefaults(c *db.Conversation) (bool, error) {
 // scan in the chat bubble — plain space-aligned text collapses in HTML.
 const helpText = "**Commands:**\n" +
 	"`help` – show this list\n" +
-	"`status` – show current status: voice, role, speed, delay, buttons\n" +
+	"`status` – show current status: voice, role, model, speed, delay, buttons\n" +
 	"`role` – list the available roles (numbered)\n" +
 	"`role [n]` – switch to that role, e.g. `role 2`\n" +
+	"`model` – list the available models (numbered)\n" +
+	"`model [n]` – switch to that model, e.g. `model 1`\n" +
 	"`voice` – list the voices (numbered)\n" +
 	"`voice [n]` – switch to that voice, e.g. `voice 5`\n" +
 	"`speed [n]` – voice speed: 3 = 1.3x, 5 = 1.5x (default 3)\n" +
@@ -384,6 +437,25 @@ func (s *Server) handleTextCommand(clientID string, c *db.Conversation, msg stri
 			}
 		}
 		return true, "Usage: role [n]. Run \"role\" to list the available roles."
+	case lower == "model":
+		return true, "Available models:\n" + s.formatModelList() + "\n\nSwitch with:  model [n]"
+	case strings.HasPrefix(lower, "model "):
+		fields := strings.Fields(msg)
+		if len(fields) == 2 {
+			if n, err := strconv.Atoi(fields[1]); err == nil {
+				models, lerr := s.loadModels()
+				if lerr != nil {
+					return true, "No models available: " + lerr.Error()
+				}
+				if n >= 1 && n <= len(models) {
+					c.Settings.Model = models[n-1]
+					log.Printf("[command] model switched to %q", c.Settings.Model)
+					return true, fmt.Sprintf("Model switched to %q.", c.Settings.Model)
+				}
+				return true, fmt.Sprintf("No model number %d. Available models:\n%s", n, s.formatModelList())
+			}
+		}
+		return true, "Usage: model [n]. Run \"model\" to list the available models."
 	case lower == "voice":
 		return true, formatVoiceList()
 	case strings.HasPrefix(lower, "voice "):
@@ -466,6 +538,7 @@ func (s *Server) formatStatus(clientID string, c *db.Conversation) string {
 	fmt.Fprintf(&b, "  **Voice:** %s — %s\n", voiceState, voiceFriendlyLabel(voiceID))
 	fmt.Fprintf(&b, "  **Role:** %s\n", roleName)
 	fmt.Fprintf(&b, "  **Voice speed:** %d (%.1fx)\n", speed, 1+float64(speed)/10)
+	fmt.Fprintf(&b, "  **Model:** %s\n", s.modelFor(c))
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -484,6 +557,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"conversation": c,
 		"role":         s.roleNameForConversation(c),
+		"model":        s.modelFor(&c),
 	})
 }
 
