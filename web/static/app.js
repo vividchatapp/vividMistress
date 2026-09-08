@@ -420,7 +420,7 @@
       }
       if (state.sending || !state.convId) return;
       log('auto-continue timer fired — sending "continue" on your behalf');
-      void sendText('continue', 'auto');
+      void sendText('the user did not respond, generate a response', 'auto');
     }, ms);
   }
 
