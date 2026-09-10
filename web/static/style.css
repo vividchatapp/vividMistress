@@ -1576,3 +1576,8 @@ html, body {
   }
 }
 
+/* Mic (Web Speech API voice input) */
+.btn-mic { flex-shrink: 0; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--border); background: var(--bg-input); color: var(--text); font-size: 11px; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.btn-mic:hover { background: var(--bg-hover); }
+.btn-mic.listening { background: var(--danger); border-color: var(--danger); color: #fff; animation: mic-pulse 1.2s ease-in-out infinite; }
+@keyframes mic-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.08); opacity: 0.85; } }

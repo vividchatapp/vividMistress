@@ -42,9 +42,34 @@
   let suggestionButtons = [];          // currently displayed button labels
   let responseTimer = null;            // auto-continue timeout id
   let audioPlayer = null;
-  let autoStreak = 0;                  // consecutive auto "continue" sends
-  let autoContinueOn = true;           // "start"/"stop": push "continue" after replies
-  let autoDelaySeconds = 10;           // pause after the mp3 before auto-continue
+  let autoStreak = 0;
+  let autoContinueOn = true;
+  let autoDelaySeconds = 10;
+  let autoListenOn = true;
+  let autoListenDelayMs = 800;
+  let autoListenTimer = null;
+  function clearAutoListenTimer() { if (autoListenTimer) { log('cancelling pending auto-mic start'); clearTimeout(autoListenTimer); autoListenTimer = null; } }
+  // Hands-free mode: when an mp3 finishes, open the mic automatically so the
+  // user can just speak. NOTE: scheduleAutoListen is a function declaration
+  // (hoisted), so handleAutoReply can call it even though the code lives
+  // further down next to the mic code.
+  function scheduleAutoListen(afterMs, why) {
+    clearAutoListenTimer();
+    if (!autoListenOn) { log('auto-mic skipped: listen off (say `start` or `listen`)'); return; }
+    if (!voiceOn) { log('auto-mic skipped: voice off (no mp3 flow)'); return; }
+    if (typeof micSupported === 'function' && !micSupported()) { log('auto-mic skipped: not supported'); return; }
+    if (!window.isSecureContext) { log('auto-mic skipped: insecure context'); return; }
+    if (state.localCmd) { log('auto-mic skipped: command reply'); return; }
+    if (state.sending) { log('auto-mic skipped: send in flight'); return; }
+    var delay = (afterMs == null ? autoListenDelayMs : afterMs);
+    log('auto-mic armed in ' + delay + 'ms (' + (why || 'mp3 ended') + ')');
+    autoListenTimer = setTimeout(function () {
+      autoListenTimer = null;
+      if (!autoListenOn || micListening || state.sending) return;
+      log('auto-mic starting (like pressing MIC)');
+      startMic(true);
+    }, delay);
+  }
   let suggestionCount = 5;             // suggestion buttons to show (1-5)
   let textOn = true;                   // show reply text on screen ("text on/off")
 
@@ -59,6 +84,7 @@
   const KEY_DELAY = 'vm_push_delay';   // seconds to wait after the mp3
   const KEY_BUTTONS = 'vm_buttons';    // suggestion button count (1-5)
   const KEY_TEXT = 'vm_text_on';       // '1' = text shown, '0' = text hidden
+  const KEY_LISTEN = 'vm_listen_on';   // '1' = auto-mic after mp3, '0' = off
 
   // ---- Per-browser client id ---------------------------------------------
   function getClientId() {
@@ -92,12 +118,13 @@
     try {
       if (localStorage.getItem(KEY_PUSH) === '0') autoContinueOn = false;
       if (localStorage.getItem(KEY_TEXT) === '0') textOn = false;
+      if (localStorage.getItem(KEY_LISTEN) === '0') autoListenOn = false;
     } catch (e) { /* ignore */ }
     autoDelaySeconds = Math.min(Math.max(0, readLocalInt(KEY_DELAY, DEFAULT_AUTO_DELAY)), MAX_AUTO_DELAY);
     suggestionCount = Math.min(Math.max(1, readLocalInt(KEY_BUTTONS, MAX_SUGGESTION_BUTTONS)), MAX_SUGGESTION_BUTTONS);
     log('session prefs: auto-continue=' + (autoContinueOn ? 'on' : 'off') +
       ' delay=' + autoDelaySeconds + 's buttons=' + suggestionCount +
-      ' text=' + (textOn ? 'on' : 'off'));
+      ' text=' + (textOn ? 'on' : 'off') + ' listen=' + (autoListenOn ? 'on' : 'off'));
   }
 
   // ---- DOM refs -----------------------------------------------------------
@@ -106,6 +133,7 @@
     emptyState: $('empty-state'),
     inputMessage: $('input-message'),
     btnSend: $('btn-send'),
+    btnMic: $('btn-mic'),
     suggestionButtons: $('suggestion-buttons'),
     btnVoice: $('btn-voice'),
     roleChip: $('role-chip'),
@@ -396,6 +424,7 @@
   function handleSuggestionClick(text) {
     log('suggestion button clicked:', JSON.stringify(text));
     clearSuggestions();
+    clearAutoListenTimer();
     autoStreak = 0;
     void sendText(text, 'button');
   }
@@ -431,7 +460,7 @@
   function handleLocalCommand(raw) {
     const text = String(raw || '').trim();
     const lower = text.toLowerCase();
-    const match = lower.match(/^(delay|buttons)(?:\s+(\d+))?$/);
+    const match = lower.match(/^(delay|buttons|listen)(?:\s+(\d+))?$/);
     const textMatch = lower.match(/^text(?:\s+(on|off))?$/);
     const isStatus = lower === 'status';
     if (lower !== 'stop' && lower !== 'start' && !match && !textMatch && !isStatus) return false;
@@ -450,7 +479,8 @@
         '`role` – ' + (state.role || '—') + '\n' +
         '`speed` – ' + voiceSpeed + ' (' + speedMult + 'x)\n' +
         '`delay` – ' + autoDelaySeconds + 's\n' +
-        '`buttons` – ' + suggestionCount);
+        '`buttons` – ' + suggestionCount + '\n' +
+        '`listen` – ' + (autoListenOn ? 'ON (mic auto-opens after mp3)' : 'OFF'));
       return true;
     }
 
@@ -486,23 +516,29 @@
     autosizeInput();
 
     if (lower === 'stop') {
-      if (!autoContinueOn) {
-        notice('Auto-continue is already **stopped** — no messages are being pushed.');
+      if (!autoContinueOn && !autoListenOn) {
+        notice('Hands-free and auto-continue are already **stopped**.');
       } else {
         autoContinueOn = false;
+        autoListenOn = false;
         autoStreak = 0;
         clearResponseTimer();
+        clearAutoListenTimer();
+        stopMic();
         saveLocalStr(KEY_PUSH, '0');
-        notice('**Auto-continue stopped.** No more messages will be pushed — you stay in control.');
+        saveLocalStr(KEY_LISTEN, '0');
+        notice('**Stopped.** No auto-mic, no pushed messages — you stay in control. (`start` resumes.)');
       }
       return true;
     }
 
     if (lower === 'start') {
       autoContinueOn = true;
+      autoListenOn = true;
       autoStreak = 0;
       saveLocalStr(KEY_PUSH, '1');
-      notice('**Auto-continue started.** After each voice reply, "continue" is pushed (delay ' + autoDelaySeconds + 's).');
+      saveLocalStr(KEY_LISTEN, '1');
+      notice('**Hands-free started.** After each voice reply the mic opens automatically (delay ~1s). (`stop` turns it off.)');
       return true;
     }
 
@@ -522,6 +558,14 @@
       autoDelaySeconds = n;
       saveLocalStr(KEY_DELAY, autoDelaySeconds);
       notice('**Push delay set to ' + autoDelaySeconds + 's.** She now waits that long after each voice reply before pushing "continue".');
+      return true;
+    }
+
+    if (cmd === 'listen') {
+      autoListenOn = !autoListenOn;
+      saveLocalStr(KEY_LISTEN, autoListenOn ? '1' : '0');
+      if (!autoListenOn) { clearAutoListenTimer(); stopMic(); }
+      notice('**Auto-mic ' + (autoListenOn ? 'ON.** The mic opens after each voice reply.' : 'OFF.** Tap MIC to talk manually.'));
       return true;
     }
 
@@ -554,6 +598,7 @@
     if (source !== 'auto') autoStreak = 0;
 
     clearSuggestions();
+    clearAutoListenTimer();
     state.sending = true;
     el.btnSend.disabled = true;
     if (source === 'typed') el.inputMessage.value = '';
@@ -606,29 +651,6 @@
   // The auto-continue timer is armed to fire mp3-length + autoDelaySeconds
   // after the reply arrived, using the loaded mp3 duration when available.
   function handleAutoReply(data) {
-    const startedAt = Date.now();
-    let scheduled = false;
-
-    const schedule = (durSeconds) => {
-      if (!autoContinueOn) {
-        log('auto-continue stopped — not arming the push timer');
-        return;
-      }
-      if (scheduled) return;
-      if (state.sending || !state.convId) {
-        // Retry shortly — the in-flight message usually finishes immediately.
-        setTimeout(() => schedule(durSeconds), 250);
-        return;
-      }
-      scheduled = true;
-      const totalMs = (Math.max(0, Number(durSeconds) || 0) + autoDelaySeconds) * 1000;
-      const elapsed = Date.now() - startedAt;
-      const waitSec = Math.max(0.5, (totalMs - elapsed) / 1000);
-      log('auto-continue: mp3=' + (Number(durSeconds) || 0).toFixed(1) +
-        's + ' + autoDelaySeconds + 's delay, arming in ' + waitSec.toFixed(1) + 's');
-      startResponseTimer(waitSec);
-    };
-
     // Ask for the buttons right away — they can be pressed while speaking.
     void fetchSuggestions();
 
@@ -636,14 +658,137 @@
       log('mp3 received (' + data.audio.length + ' base64 chars)');
       playAudio(data.audio, data.audio_mime || 'audio/mpeg', () => {
         log('mp3 finished playing');
-        // Fallback in case the duration metadata never arrived.
-        schedule(0);
-      }, (dur) => schedule(dur));
+        if (autoListenOn) { scheduleAutoListen(autoListenDelayMs, 'mp3 ended'); return; }
+        if (!autoContinueOn) { log('auto-continue stopped — staying quiet'); return; }
+        startResponseTimer(autoDelaySeconds);
+      }, (dur) => {
+        if (!autoListenOn && autoContinueOn) {
+          const waitSec = Math.max(0.5, (Math.max(0, Number(dur) || 0) + autoDelaySeconds));
+          log('auto-continue: mp3=' + (Number(dur) || 0).toFixed(1) + 's + ' + autoDelaySeconds + 's delay, arming in ' + waitSec.toFixed(1) + 's');
+          startResponseTimer(waitSec);
+        }
+      });
     } else {
       log('no mp3 in reply (voice muted or TTS failed)');
-      schedule(0);
+      if (autoListenOn) { scheduleAutoListen(autoListenDelayMs, 'no mp3'); return; }
+      if (!autoContinueOn) { log('auto-continue stopped — staying quiet'); return; }
+      startResponseTimer(autoDelaySeconds);
     }
   }
+
+  // ---- Voice input (Web Speech API) ----
+  // Browser built-in speech recognition (Chrome desktop + Android Chrome).
+  // Transcript goes into the composer and sends via normal sendText().
+  var micRec = null;
+  var micListening = false;
+  var micFinal = '';
+  function micSupported() { return !!((window.SpeechRecognition || window.webkitSpeechRecognition)); }
+  function setMicUI(listening) {
+    micListening = listening;
+    if (el.btnMic) {
+      el.btnMic.classList.toggle('listening', listening);
+      el.btnMic.textContent = listening ? 'STOP' : 'MIC';
+      el.btnMic.setAttribute('aria-pressed', String(listening));
+    }
+    if (el.inputMessage) el.inputMessage.placeholder = listening ? 'Listening... speak now (tap STOP when done)' : 'Message Vivid Mistress... (Enter to send, Shift+Enter for new line)';
+  }
+  function stopMic() { if (micRec && micListening) { try { micRec.stop(); } catch (e) {} } }
+  // Turns the MIC button red BEFORE start() so you see feedback even if the
+  // browser is slow to fire onstart (or rejects the auto-start entirely).
+  function setMicArmed(armed) {
+    if (el.btnMic) {
+      el.btnMic.classList.toggle('listening', armed || micListening);
+      if (armed && !micListening) el.btnMic.textContent = '...';
+      else if (!micListening) el.btnMic.textContent = 'MIC';
+    }
+    if (armed && el.inputMessage) el.inputMessage.placeholder = 'Opening mic...';
+  }
+  // auto = true when the mic is opened automatically after an mp3 (not a tap).
+  // Chrome only allows start() from a user gesture, so an auto-start may be
+  // rejected — in that case fall back to the old auto-continue push timer.
+  function startMic(auto) {
+    if (!micSupported()) { if (!auto) appendMessage('assistant', 'Voice input not supported here. Try Chrome (desktop or Android).', { notice: true }); return false; }
+    if (micListening) return true;
+    if (!window.isSecureContext) { if (!auto) appendMessage('assistant', 'Mic needs HTTPS (or localhost). Plain http://LAN-IP blocks the mic on Android. Use https:// or http://localhost:port.', { notice: true }); return false; }
+    try { if (audioPlayer) audioPlayer.pause(); } catch (e) {}
+    clearResponseTimer();
+    clearAutoListenTimer();
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    micRec = new SR();
+    micRec.lang = 'en-US';
+    micRec.interimResults = false;
+    micRec.continuous = false;
+    micRec.maxAlternatives = 1;
+    micFinal = '';
+    micRec.onstart = function () { log('mic: listening started' + (auto ? ' (auto)' : '')); setMicUI(true); };
+    var autoFailed = false;
+    var failAuto = function (code) {
+      if (!auto || autoFailed) return;
+      autoFailed = true;
+      setMicArmed(false);
+      warn('auto-mic blocked (' + code + ') — need one manual MIC tap first, falling back to push timer');
+      appendMessage('assistant', 'Tap MIC once to enable hands-free (browser blocks auto-mic until then).', { notice: true });
+      if (autoContinueOn) startResponseTimer(autoDelaySeconds);
+    };
+    micRec.onresult = function (event) {
+      var t = '';
+      try { t = event.results[event.results.length - 1][0].transcript; } catch (e) { t = ''; }
+      if (t) {
+        micFinal = t;
+        if (el.inputMessage) { el.inputMessage.value = t; autosizeInput(); }
+        log('mic: transcript', JSON.stringify(t));
+      }
+    };
+    micRec.onerror = function (event) {
+      var code = event && event.error;
+      warn('mic error:', code);
+      setMicArmed(false);
+      setMicUI(false);
+      if (auto && (code === 'not-allowed' || code === 'service-not-allowed')) { failAuto(code); return; }
+      if (code === 'not-allowed' || code === 'service-not-allowed') appendMessage('assistant', 'Mic blocked. In Android Chrome: lock icon in address bar > Permissions > Microphone > Allow, then reload. Needs HTTPS or localhost.', { notice: true });
+      else if (code === 'no-speech') {
+        if (auto) { log('auto-mic heard nothing — re-arming'); scheduleAutoListen(1500, 'retry after no-speech'); return; }
+        appendMessage('assistant', 'Did not hear anything - tap MIC and speak, then pause.', { notice: true });
+      }
+      else if (code === 'network') appendMessage('assistant', 'Speech service needs internet (Google recogniser). Check connection and try again.', { notice: true });
+      else if (code === 'aborted') { log('mic aborted (tap STOP or auto-stop)'); }
+      else if (!auto) appendMessage('assistant', 'Mic error: ' + code + '. Tap MIC once and speak, then pause.', { notice: true });
+    };
+    micRec.onend = function () {
+      log('mic: ended, final=', JSON.stringify(micFinal));
+      setMicArmed(false);
+      setMicUI(false);
+      if (autoFailed) return;
+      var text = (micFinal || (el.inputMessage ? el.inputMessage.value : '')).trim();
+      if (text) {
+        if (handleLocalCommand(text)) { el.inputMessage.value = ''; autosizeInput(); return; }
+        log('mic: auto-sending', JSON.stringify(text));
+        void sendText(text, 'voice');
+        if (el.inputMessage) { el.inputMessage.value = ''; autosizeInput(); }
+      } else if (auto) {
+        log('auto-mic got no text — re-arming once');
+        scheduleAutoListen(1500, 'retry after empty');
+      }
+    };
+    try { log('mic: start()' + (auto ? ' (auto)' : ' (tap)')); setMicArmed(true); micRec.start(); }
+    catch (e) {
+      errorLog('mic start failed:', e);
+      setMicArmed(false); setMicUI(false);
+      if (auto) failAuto('start-threw'); else appendMessage('assistant', 'Could not start mic: ' + e.message, { notice: true });
+      return false;
+    }
+    // If the browser never fires onstart (gesture-blocked auto-start), the
+    // onend with empty text will re-arm / fall back. Also add a watchdog:
+    if (auto) setTimeout(function () {
+      if (!micListening && !micFinal && !autoFailed) failAuto('no-start');
+    }, 2500);
+    return true;
+  }
+  function toggleMic() {
+    if (micListening) { stopMic(); return; }
+    startMic(false);
+  }
+
 
   // ---- Composer + events -----------------------------------------------------
   function sendMessage() {
@@ -663,6 +808,16 @@
   }
 
   if (el.btnSend) el.btnSend.addEventListener('click', sendMessage);
+  if (el.btnMic) {
+    if (!micSupported()) { el.btnMic.style.opacity = '0.4'; el.btnMic.title = 'Not supported (try Chrome)'; }
+    el.btnMic.addEventListener('click', () => {
+      // Manual tap always counts as the user gesture Chrome wants — after one
+      // tap, auto-starts after mp3s are allowed too.
+      if (micListening) { stopMic(); return; }
+      clearAutoListenTimer();
+      startMic(false);
+    });
+  }
 
   if (el.inputMessage) {
     el.inputMessage.addEventListener('keydown', (e) => {
@@ -678,6 +833,7 @@
     // fight the user.
     el.inputMessage.addEventListener('input', () => {
       autosizeInput();
+      clearAutoListenTimer();
       if (responseTimer) {
         log('user is typing — cancelling the auto-continue timer');
         clearResponseTimer();

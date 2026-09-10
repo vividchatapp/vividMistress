@@ -6,3 +6,5 @@
 
 # LLM request/response dumps
 llm_dumps/
+/cert.pem
+/key.pem
